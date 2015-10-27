@@ -1,13 +1,15 @@
 
 import alu::*;
+import alu_faulty ::*;
 import control ::*;
 import DMem ::*;
 import IMem ::*;
 import myRegFile ::*;
 import PC ::*;
 import jump_alu ::*;
+import fault_tolerance ::*;
 
-interface Dummy;
+interface Dummy; // test nodes
 	method Bit#(32) tst_pc();
 	method Bit#(32) tst_instruction();
 	method Bit#(32) tst_rd1();
@@ -31,13 +33,16 @@ endinterface
 module mkMyProcessor(Dummy);
 
 Reg#(int) state <- mkReg(0);
-ALU_ifc my_alu <- mkALU;
+ALU_ifc my_alu1 <- mkALU;
+ALU_ifc my_alu2 <- mkALU;
+ALUf_ifc my_alu3 <- mkALU_f;
 PC_ifc pc <- mkPC;
 IMem_ifc imem <- mkIMem;
 RegFile_ifc rf <- mkmyRegFile;
 DMem_ifc dmem <- mkDMem;
 Control_ifc cntl <- mkcontrol;
 Jmp_ifc jmp <- mkjump_alu;
+FT_ifc ft <- mkFT;
 
 
 
@@ -89,31 +94,43 @@ Reg#(Bool) s1ALUSrc <- mkReg(False);
 
 
 rule processor_active (state == 0);
-	pc.pc_upd(jmp.jump(my_alu.alu_final(), s3_pc, s1_sign_extend_data, s1ALUSrc), s1Branch, my_alu.alu_zero());
-	
-	cntl.cntl_out(opcode, funct3, funct7);
-	my_alu.alu_out(read_data1, read_data2, sign_extend_data, cntl.myALUOp(), cntl.myALUSrc());
-	dmem.write_mem(my_alu.alu_final(), s1_read_data2, s1MemWrite, s1DataCntl);
-	rf.write(s2_rs2, s2_rd, dmem.read_mem(my_alu.alu_final(), s1MemRead, s1DataCntl), my_alu.alu_final(), s1RegDst, s1MemtoReg, s1RegWrite);
 
-	
-	
+// 1st stage pipeline
 
-	
+// PC is updated and the value is available at the PC register
+// PC register is defined in the PC module
+
+	pc.pc_upd(jmp.jump(ft.fault_remove(my_alu1.alu_final(), my_alu2.alu_final(), my_alu3.alu_final()), s3_pc, s1_sign_extend_data, s1ALUSrc), s1Branch, ft.fault_remove_bool(my_alu1.alu_zero(), my_alu2.alu_zero(), my_alu3.alu_zero())); // update PC
+
+
+// #####################################################################
+
+// 2nd stage pipeline
+
+// instruction is fetched from the IMem and is available at the instruction register
+// PC required for the next stage is stored
+
 	instruction <= imem.load_ins(pc.pc_out());
-
+	s1_pc <= pc.pc_out();
 	
-	//read_data1 <= rf.read1(rs1);
+
+// #####################################################################
+
+// 3rd stage pipeline
+
+// data is fetched from the register file using the appropriate control signals
+// Control signals are available at the control registers
+// Control registers are defined in the control module
+
+	cntl.cntl_out(opcode, funct3, funct7);
 	read_data2 <= rf.read2(rs2);
-	s1_read_data2 <= read_data2;
-	//sign_extend_data <= imm_t1_sign_extend;
 	case (opcode)
-		7'b0000001: begin
+		7'b0000001: begin // OP-IMM
 				sign_extend_data <= imm_t1_sign_extend;
 				read_data1 <= rf.read1(rs1);
 			    end
 
-		7'b0000101: begin
+		7'b0000101: begin 
 				sign_extend_data <= imm_ct1_sign_extend;
 				read_data1 <= 0;
 			    end
@@ -143,6 +160,31 @@ rule processor_active (state == 0);
 				read_data1 <= {pack(s1_pc)[31:12], 0};
 			    end
 	endcase
+
+// PC required for next stage is stored
+
+	s2_pc <= s1_pc;
+
+// Address required for next stage is stored
+
+	s1_rd <= rd;
+	s1_rs2 <= rs2;
+	
+
+// ############################################################################
+
+// 4th stage pipeline
+
+// ALU result is available at the ALU register
+// ALU register is defined in the ALU module
+
+
+	my_alu1.alu_out(read_data1, read_data2, sign_extend_data, cntl.myALUOp(), cntl.myALUSrc());
+	my_alu2.alu_out(read_data1, read_data2, sign_extend_data, cntl.myALUOp(), cntl.myALUSrc());
+	my_alu3.alu_out(read_data1, read_data2, sign_extend_data, cntl.myALUOp(), cntl.myALUSrc());
+
+// control signals required for the next stage is stored
+
 	s1RegDst <= cntl.myRegDst();
 	s1MemRead <= cntl.myMemRead();
 	s1MemtoReg <= cntl.myMemtoReg();
@@ -150,20 +192,39 @@ rule processor_active (state == 0);
 	s1RegWrite <= cntl.myRegWrite();
 	s1Branch <= cntl.myBranch();
 	s1ALUSrc <= cntl.myALUSrc();
+	s1DataCntl <= cntl.myDataCntl();
 
-	s1_rd <= rd;
-	s1_rs2 <= rs2;
+// data required for the next stage is stored
+
+	s1_read_data2 <= read_data2;
+	s1_sign_extend_data <= sign_extend_data;
+
+// Address required for the next stage is stored
+
 	s2_rd <= s1_rd;
 	s2_rs2 <= s1_rs2;
-	s1_pc <= pc.pc_out();
-	s2_pc <= s1_pc;
+	
+// PC required for the next stage is stored
+	
 	s3_pc <= s2_pc;
 
-	s1_sign_extend_data <= sign_extend_data;
-	s1DataCntl <= cntl.myDataCntl();
-	
 
+// ###############################################################################
+
+// 5th stage pipeline
+
+// Data is written to memory
+
+	dmem.write_mem(ft.fault_remove(my_alu1.alu_final(), my_alu2.alu_final(), my_alu3.alu_final()), s1_read_data2, s1MemWrite, s1DataCntl);
+
+// Data is written in register
+
+	rf.write(s2_rs2, s2_rd, dmem.read_mem(ft.fault_remove(my_alu1.alu_final(), my_alu2.alu_final(), my_alu3.alu_final()), s1MemRead, s1DataCntl), ft.fault_remove(my_alu1.alu_final(), my_alu2.alu_final(), my_alu3.alu_final()), s1RegDst, s1MemtoReg, s1RegWrite);
+	
 endrule
+
+
+// methods to probe the test nodes
 
 method Bit#(32) tst_pc();
 	return pc.pc_out();
@@ -188,7 +249,7 @@ method Bit#(32) tst_imm();
 endmethod
 
 method Bit#(32) tst_alu();
-	return my_alu.alu_final();
+	return my_alu1.alu_final();
 endmethod
 
 method Bit#(10) tst_s1ALUOp();
@@ -229,7 +290,7 @@ method Bit#(32) tst_s2_pc();
 endmethod
 
 method Bit#(32) tst_jmp_alu();
-	return jmp.jump(my_alu.alu_final(), s3_pc, s1_sign_extend_data, cntl.myALUSrc());
+	return jmp.jump(my_alu1.alu_final(), s3_pc, s1_sign_extend_data, cntl.myALUSrc());
 endmethod
 
 method Bit#(32) tst_data_mem();
