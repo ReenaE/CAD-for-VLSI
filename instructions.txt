@@ -1,9 +1,0 @@
-//syntax
-// OP-IMM, JALR, LOAD: opcode rd function rs1 imm
-// LUI, JAL, AIPUC: opcode rd imm
-// OP: opcode rd function rs1 rs2
-// BRANCH, STORE: opcode function rs1 rs2 imm
-
-
-OP-IMM 00001 SLTIU 00010 000000000011
-JALR 00011 000 00100 000000011100  
